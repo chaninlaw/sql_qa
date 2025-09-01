@@ -1,10 +1,10 @@
 from langgraph.prebuilt import create_react_agent
+from langgraph.graph.state import CompiledStateGraph
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 
-from llm import llm
-from db import db
+from chain import SQLDatabase, BaseChatModel
 
 system_message = """
 You are an agent designed to interact with a SQL database.
@@ -28,39 +28,45 @@ can query. Do NOT skip this step.
 
 Then you should query the schema of the most relevant tables.
 """.format(dialect="SQLite", top_k=5,)
+
 user_prompt = "Question: {input}"
+
 query_prompt_template = ChatPromptTemplate([
     ("system", system_message),
     ("user", user_prompt)
 ])
 
-toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-tools = toolkit.get_tools()
-agent_executor = create_react_agent(llm, tools, prompt=system_message)
 
-png_bytes = agent_executor.get_graph().draw_mermaid_png()
-with open("graph.png", "wb") as f:
-    f.write(png_bytes)
+def build_chat(llm: BaseChatModel, db: SQLDatabase):
+    """
+    Example:
+        ```python
+        agent_executor = build_chat(llm, db)
+        for step in agent_executor.stream(
+            {"messages": [{"role": "user", "content": "How many employees are there?"}]},
+            config=RunnableConfig({"configurable": {"thread_id": "1"}}),
+            stream_mode="values",
+            interrupt_before=["tools"]
+        ):
+            step["messages"][-1].pretty_print()
+        ```
+    """
+    toolkit = SQLDatabaseToolkit(llm=llm, db=db)
+    tools = toolkit.get_tools()
 
-# How many employees are there?
-user_input = input("Enter your question: ")
-config = RunnableConfig({"configurable": {"thread_id": "1"}})
-for step in agent_executor.stream(
-    {"messages": [{"role": "user", "content": user_input}]},
-    config=config,
-    stream_mode="values",
-    interrupt_before=["tools"]
-):
-    step["messages"][-1].pretty_print()
+    agent_executor = create_react_agent(llm, tools, prompt=system_message)
+    return agent_executor
 
-try:
-    user_approval = input("Do you want to go to execute query? (Y/n): ")
-except Exception:
-    user_approval = "n"
 
-if user_approval.lower() == "y":
-    # If approved, continue the graph execution
-    for step in agent_executor.stream(None, config, stream_mode="updates"):
-        print(step)
-else:
-    print("Operation cancelled by user.")
+def human_in_the_loop(agent_executor: CompiledStateGraph, config: RunnableConfig):
+    try:
+        user_approval = input("Do you want to go to execute query? (Y/n): ")
+    except Exception:
+        user_approval = "n"
+
+    if user_approval.lower() == "y":
+        # If approved, continue the graph execution
+        for step in agent_executor.stream(None, config, stream_mode="updates"):
+            print(step)
+    else:
+        print("Operation cancelled by user.")

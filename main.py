@@ -1,13 +1,12 @@
-from langchain_core.runnables import RunnablePassthrough
+from chat.large_db import build_chat
+from chat.db.sql import build_sql_database
+from chat.llm.openai import build_llm
 
-from table import table_chain
-from query import query_chain
+db = build_sql_database("sqlite:///Chinook.db")
+llm = build_llm()
+chat = build_chat(llm, db)
 
+user_input = input("Question: ")
 
-# Set table_names_to_use using table_chain.
-full_chain = RunnablePassthrough.assign(table_names_to_use=table_chain) | query_chain
-
-query = full_chain.invoke(
-    {"question": "What are all the genres of Alanis Morissette songs"}
-)
-print(query)
+response = chat(user_input)
+print(response)
