@@ -1,12 +1,15 @@
-from chat.large_db import build_chat
-from chat.db.sql import build_sql_database
-from chat.llm.openai import build_llm
+from chat import large_db
+from chat.db import sql
+from chat.llm import openrouter
 
-db = build_sql_database("sqlite:///Chinook.db")
-llm = build_llm()
-chat = build_chat(llm, db)
+db = sql.build_sql_database("sqlite:///Chinook.db")
+llm = openrouter.build_llm()
+chat = large_db.build_chat(llm, db)
 
-user_input = input("Question: ")
-
-response = chat(user_input)
-print(response)
+while True:
+    try:
+        user_input = input(">>: ")
+        chat(user_input)
+    except EOFError:
+        print("Bye")
+        break
