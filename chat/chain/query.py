@@ -1,11 +1,8 @@
-from langchain.chains.sql_database.query import create_sql_query_chain
-from langchain.chains.sql_database.prompt import SQL_PROMPTS
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain.prompts import FewShotPromptTemplate, PromptTemplate, ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import SystemMessagePromptTemplate, HumanMessagePromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-import re
 
 examples = [
     {"input": "List all artists.", "query": "SELECT * FROM Artist;"},

@@ -12,13 +12,14 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 from langchain_core.output_parsers.openai_tools import PydanticToolsParser
 from langchain_core.messages.utils import get_buffer_string
+from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt, Command
 
 from chat.db.sql import SQLDatabase
-from chat.chain.query import build_query_chain, BaseChatModel
+from chat.chain import query, router, clarify, table_categorize, summarization
 from chat.utils import draw_graph
 from chat.llm import openai, ollama
 
@@ -33,44 +34,6 @@ TABLE_GROUPS = {
     "Music":    ["Album", "Artist", "Genre", "MediaType", "Playlist", "PlaylistTrack", "Track"],
     "Business":   ["Customer", "Employee", "Invoice", "InvoiceLine"],
 }
-
-
-class Slots(BaseModel):
-    group: Optional[str] = Field(
-        default=None, description="e.g., Business, Music")
-    metric: Optional[Literal["count", "sum", "avg", "min", "max"]] = None
-    time_range: Optional[str] = None
-    missing: List[Literal["group", "metric", "time_range"]
-                  ] = Field(default_factory=list)
-
-
-class Route(BaseModel):
-    decided: Literal["clarification", "direct_response", "table_selection_node"] = Field(
-        description="Pick 'clarification' if unrelated or missing critical slots. Pick 'direct_response' if the conversation is ready for a direct answer."
-    )
-    reason: str = Field(
-        description="One-sentence why you chose that path."
-    )
-    slots: Slots
-
-
-class Table(BaseModel):
-    """Table in SQL database."""
-    name: str = Field(description="Name of table in SQL database.")
-
-
-def groups_to_tables(categories: List[Table]) -> List[str]:
-    out = []
-    for c in categories:
-        out.extend(TABLE_GROUPS.get(c.name, []))
-    return sorted(set(out))
-
-
-class Clarification(BaseModel):
-    summary: str = Field(
-        description="1–2 sentences; end with how AI can help.")
-    follow_up_question: str = Field(
-        description="ONE short, polite, specific question.")
 
 
 class State(BaseModel):
@@ -106,40 +69,10 @@ def build_chat(llm: BaseChatModel, db: SQLDatabase):
     # Create node functions with access to llm and db
     def router_node(state: State):
         """Ingest user question and relevant context, attach to messages"""
-        route_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an intelligent router. Decide if the conversation has ENOUGH info to direct response or build a SQL query. If this conversation need to build a SQL query do the MIN REQUIRED SLOTS, ASSUMPTION POLICY, and DECISION POLICY, or conversation enough info to direct response just do the DECISION POLICY
-
-MIN REQUIRED SLOTS:
-- group (table group/dataset)
-- metric (e.g., count/sum/avg). If user says “how many/total count” -> metric=count.
-OPTIONAL:
-- time_range (assume all-time if not specified; DO NOT block on this unless question is time-sensitive)
-
-ASSUMPTION POLICY:
-- “how many”, “total”, “in total” => metric = count
-- Mention of “Business”/“Music” => group = that value
-- “employees”, “staff”, “personnel” => entity = employees
-
-DECISION POLICY:
-- If conversation enough info to direct response => decided = direct_response
-- If group AND entity AND metric are determined => decided = table_selection_node
-- Otherwise => decided = clarification (fill `slots.missing`)
-
-TABLE DIGEST:
-{table_digest}
-
-CONVERSATION:
-{conversation}
-
-OUTPUT:
-Return JSON ONLY in the provided schema {{decided, reason, slots}}.
-Do your internal analysis silently. Do NOT include chain-of-thought."""),
-            ("human", "{current_input}")
-        ])
-        router_chain = route_prompt | llm0.with_structured_output(Route)
-        route: Route = cast(Route, router_chain.invoke({"table_digest": "\n".join(TABLE_GROUPS.keys()),
-                                                        "current_input": state.current_input,
-                                                        "conversation": state.messages}))
+        router_chain = router.build_router_chain(llm0)
+        route: router.Route = cast(router.Route, router_chain.invoke({"table_digest": "\n".join(TABLE_GROUPS.keys()),
+                                                                      "current_input": state.current_input,
+                                                                      "conversation": state.messages}))
 
         return {
             "group": route.slots.group or state.group,
@@ -160,46 +93,23 @@ Do your internal analysis silently. Do NOT include chain-of-thought."""),
     def clarification_node(state: State):
         """Node for asking clarifying questions."""
         transcript = get_buffer_string(state.messages)
-        clarify_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are “Summary+Clarify” for SQL Q&A.
-Output JSON ONLY per schema:
-- summary: 1–2 sentences. End with one clause of how you (the AI) can help next.
-- follow_up_question: ONE short, polite, specific question that resolves the MOST blocking missing info among:
-  table/dataset, entity, metric, time_range, filters.
-
-Tables:\n{table_digest}
-
-Conversation:
-{conversation_text}
-"""),
-        ])
-        chain = clarify_prompt | llm.with_structured_output(Clarification)
-        clarify: Clarification = cast(Clarification,
-                                      chain.invoke({"conversation_text": transcript,
-                                                    "table_digest": "\n".join(TABLE_GROUPS.keys())}))
+        chain = clarify.build_clarify_chain(llm)
+        result: clarify.Clarification = cast(clarify.Clarification,
+                                             chain.invoke({"conversation_text": transcript,
+                                                           "table_digest": "\n".join(TABLE_GROUPS.keys())}))
         return {
-            "final_answer": clarify.follow_up_question,
-            "messages": [AIMessage(clarify.follow_up_question)],
-            "summary": clarify.summary
+            "final_answer": result.follow_up_question,
+            "messages": [AIMessage(result.follow_up_question)],
+            "summary": result.summary
         }
 
-    def table_selection_node(state: State):
+    def table_categorize_node(state: State):
         """Node for selecting relevant tables based on user question."""
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""Return the names of ALL the SQL tables that MIGHT be relevant to the user question. Remember to include ALL POTENTIALLY RELEVANT tables, even if you're not sure that they're needed.
-The tables are:
+        category_chain = table_categorize.build_table_categorize_chain(llm)
+        table: List[table_categorize.Table] = category_chain.invoke({"question": state.current_input,
+                                                                     "table_groups": "\n".join(TABLE_GROUPS.keys())})
 
-{"\n".join(TABLE_GROUPS.keys())}"""),
-            ("human", "Question: {question}")
-        ])
-
-        llm_with_tool = llm_tool.bind_tools([Table], tool_choice="required")
-        output_parser = PydanticToolsParser(tools=[Table])
-        category_chain = prompt | llm_with_tool | output_parser
-        table: List[Table] = category_chain.invoke(
-            {"question": state.current_input})
-
-        relevant_tables = groups_to_tables(table)
+        relevant_tables = table_categorize.groups_to_tables(table)
         return {"relevant_tables": relevant_tables,
                 "messages": [AIMessage(f"Relevant tables: {', '.join(relevant_tables) or '∅'}")]}
 
@@ -209,8 +119,7 @@ The tables are:
             if state.error:
                 return {"error": state.error}
 
-            query_chain = build_query_chain(llm0, db)
-
+            query_chain = query.build_query_chain(llm0, db)
             sql_query = query_chain.invoke({
                 "question": state.current_input,
                 "relevant_tables": state.relevant_tables or [],
@@ -237,26 +146,7 @@ The tables are:
                 # TODO
                 return {"final_answer": f"I encountered an error while processing your question: {state.error}"}
 
-            summary_prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are a helpful assistant that provides clear, concise answers based on SQL query results.
-
-Given a user question, the SQL query that was executed, and the results, provide a natural language answer that:
-1. Directly answers the user's question
-2. Is easy to understand
-3. Includes relevant details from the results
-4. Mentions if no results were found
-
-Do not include the SQL query in your response unless specifically asked."""),
-                ("human", """Question: {question}
-
-SQL Query: {sql_query}
-
-Results: {sql_result}
-
-Please provide a clear, natural language answer to the question based on these results.""")
-            ])
-
-            summary_chain = summary_prompt | llm
+            summary_chain = summarization.build_summarization_chain(llm)
             final_answer = summary_chain.invoke({
                 "question": state.current_input,
                 "sql_query": state.sql_query,
@@ -267,19 +157,16 @@ Please provide a clear, natural language answer to the question based on these r
         except Exception as e:
             return {"final_answer": f"I encountered an error while generating the summary: {str(e)}"}
 
-    def human_approval_node(state: State) -> Command[Literal["sql_execution", "summarization"]]:
+    def human_approval_node(state: State) -> Command[Literal["sql_execution", "direct_response"]]:
         """Ask user to approve SQL query before execution."""
-        if not state.sql_query:
-            return Command(goto="sql_execution")
-
-        answer = interrupt({
+        answer: str = interrupt({
             "sql_query": state.sql_query,
             "question": "Do you would like to run this query? (Y/n): "
         })
-        if answer.lower() == 'y':
+        if answer.strip().lower() == 'y':
             return Command(goto="sql_execution")
         else:
-            return Command(goto="summarization")
+            return Command(goto="direct_response", update={"final_answer": "User declined to run the query."})
 
     def retry_logic_node(state: State):
         """Decide whether to retry or continue."""
@@ -304,7 +191,7 @@ Please provide a clear, natural language answer to the question based on these r
         else:
             return "summarization"
 
-    def router_edge(state: State) -> Literal["clarification", "table_selection", "direct_response"]:
+    def router_edge(state: State) -> Literal["clarification", "table_categorize", "direct_response"]:
         """Read last message."""
         last = state.messages[-1].content if state.messages else [
             "Decision: clarification"]
@@ -312,14 +199,14 @@ Please provide a clear, natural language answer to the question based on these r
             return "direct_response"
         if "Decision: clarification" in last:
             return "clarification"
-        return "table_selection"
+        return "table_categorize"
 
     # Add nodes to the graph
     graph.add_node("router", router_node)
     # graph.add_node("guard", guard_node)
     graph.add_node("direct_response", direct_response_node)
     graph.add_node("clarification", clarification_node)
-    graph.add_node("table_selection", table_selection_node)
+    graph.add_node("table_categorize", table_categorize_node)
     graph.add_node("sql_generation", sql_generation_node)
     graph.add_node("sql_execution", sql_execution_node)
     graph.add_node("summarization", summarization_node)
@@ -329,9 +216,8 @@ Please provide a clear, natural language answer to the question based on these r
     # Define the flow
     graph.set_entry_point("router")
     # graph.add_edge("router", "guard")
-    graph.add_edge("table_selection", "sql_generation")
+    graph.add_edge("table_categorize", "sql_generation")
     graph.add_edge("sql_generation", "human_approval")
-    graph.add_edge("human_approval", "sql_execution")
     graph.add_edge("sql_execution", "retry_logic")
     graph.add_edge("direct_response", END)
     graph.add_edge("summarization", END)
@@ -342,7 +228,7 @@ Please provide a clear, natural language answer to the question based on these r
         "router",
         router_edge,
         {
-            "table_selection": "table_selection",
+            "table_categorize": "table_categorize",
             "clarification": "clarification",
             "direct_response": "direct_response"
         }
@@ -389,7 +275,7 @@ Please provide a clear, natural language answer to the question based on these r
             print(f"🤖 SQL Query: {sql_query}")
             user_decision = input(question)
 
-            command = Command(resume=user_decision)
+            command = Command(goto="human_approval", resume=user_decision)
             result = compiled_graph.invoke(command, config=config)
             if "final_answer" in result:
                 print(f"💡{result.get('final_answer', 'No Answer')}")
