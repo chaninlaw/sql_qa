@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 class Slots(BaseModel):
     group: Optional[str] = Field(
-        default=None, description="e.g., Business, Music")
+        default=None, description="List of table digest that relates to the user's question.")
     metric: Optional[Literal["count", "sum", "avg", "min", "max"]] = None
     time_range: Optional[str] = None
     missing: List[Literal["group", "metric", "time_range"]
@@ -33,8 +33,6 @@ OPTIONAL:
 
 ASSUMPTION POLICY:
 - “how many”, “total”, “in total” => metric = count
-- Mention of “Business”/“Music” => group = that value
-- “employees”, “staff”, “personnel” => entity = employees
 
 DECISION POLICY:
 - If conversation enough info to direct response => decided = direct_response

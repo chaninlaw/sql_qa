@@ -1,0 +1,17 @@
+{
+  "Music": [
+    "Album",
+    "Artist", 
+    "Genre",
+    "MediaType",
+    "Playlist",
+    "PlaylistTrack",
+    "Track"
+  ],
+  "Business": [
+    "Customer",
+    "Employee",
+    "Invoice",
+    "InvoiceLine"
+  ]
+}

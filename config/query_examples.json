@@ -1,0 +1,22 @@
+ [
+    {
+      "input": "List all artists.", 
+      "query": "SELECT * FROM Artist;"
+    },
+    {
+        "input": "Find all albums for the artist 'AC/DC'.",
+        "query": "SELECT * FROM Album WHERE ArtistId = (SELECT ArtistId FROM Artist WHERE Name = 'AC/DC');"
+    },
+    {
+        "input": "List all tracks in the 'Rock' genre.",
+        "query": "SELECT * FROM Track WHERE GenreId = (SELECT GenreId FROM Genre WHERE Name = 'Rock');"
+    },
+    {
+        "input": "Find the total duration of all tracks.",
+        "query": "SELECT SUM(Milliseconds) FROM Track;"
+    },
+    {
+        "input": "List all customers from Canada.",
+        "query": "SELECT * FROM Customer WHERE Country = 'Canada';"
+    }
+]

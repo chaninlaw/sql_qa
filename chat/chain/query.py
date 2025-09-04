@@ -1,52 +1,20 @@
+import json
+import os
+from typing import List, Literal, Dict
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain.prompts import FewShotPromptTemplate, PromptTemplate, ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import SystemMessagePromptTemplate, HumanMessagePromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-examples = [
-    {"input": "List all artists.", "query": "SELECT * FROM Artist;"},
-    {
-        "input": "Find all albums for the artist 'AC/DC'.",
-        "query": "SELECT * FROM Album WHERE ArtistId = (SELECT ArtistId FROM Artist WHERE Name = 'AC/DC');",
-    },
-    {
-        "input": "List all tracks in the 'Rock' genre.",
-        "query": "SELECT * FROM Track WHERE GenreId = (SELECT GenreId FROM Genre WHERE Name = 'Rock');",
-    },
-    {
-        "input": "Find the total duration of all tracks.",
-        "query": "SELECT SUM(Milliseconds) FROM Track;",
-    },
-    {
-        "input": "List all customers from Canada.",
-        "query": "SELECT * FROM Customer WHERE Country = 'Canada';",
-    },
-    {
-        "input": "How many tracks are there in the album with ID 5?",
-        "query": "SELECT COUNT(*) FROM Track WHERE AlbumId = 5;",
-    },
-    {
-        "input": "Find the total number of invoices.",
-        "query": "SELECT COUNT(*) FROM Invoice;",
-    },
-    {
-        "input": "List all tracks that are longer than 5 minutes.",
-        "query": "SELECT * FROM Track WHERE Milliseconds > 300000;",
-    },
-    {
-        "input": "Who are the top 5 customers by total purchase?",
-        "query": "SELECT CustomerId, SUM(Total) AS TotalPurchase FROM Invoice GROUP BY CustomerId ORDER BY TotalPurchase DESC LIMIT 5;",
-    },
-    {
-        "input": "Which albums are from the year 2000?",
-        "query": "SELECT * FROM Album WHERE strftime('%Y', ReleaseDate) = '2000';",
-    },
-    {
-        "input": "How many employees are there",
-        "query": 'SELECT COUNT(*) FROM "Employee"',
-    },
-]
+EXAMPLES: List[Dict[str, Dict[Literal["input", "query"], str]]] = []
+try:
+    config_path = os.getenv('QUERY_EXAMPLES_CONFIG_PATH',
+                            'config/query_examples.json')
+    with open(config_path, 'r') as f:
+        EXAMPLES = json.load(f)
+except Exception as e:
+    print(f"Error loading query examples: {e}")
 
 
 def extract_sql_query(text: str) -> str:
@@ -69,7 +37,7 @@ def extract_sql_query(text: str) -> str:
 
 def build_query_chain(llm: BaseChatModel, db: SQLDatabase):
     few_shot_prompt = FewShotPromptTemplate(
-        examples=examples[:5],
+        examples=EXAMPLES,
         example_prompt=PromptTemplate.from_template(
             "Question: {input}\nSQLQuery: {query}"),
         prefix="Below are a number of examples of questions and their corresponding SQL queries:",

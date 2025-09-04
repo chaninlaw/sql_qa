@@ -3,14 +3,15 @@ Deal with large databases when doing SQL question-answering
 ![Link](https://python.langchain.com/docs/how_to/sql_large_db/)
 """
 
-from typing import List, Optional, Literal, cast
+import json
+import os
 import uuid
+from typing import Dict, List, Optional, Literal, cast
 from typing_extensions import Annotated
 from pydantic import BaseModel, Field
+
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
-from langchain_core.output_parsers.openai_tools import PydanticToolsParser
 from langchain_core.messages.utils import get_buffer_string
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import StateGraph, END
@@ -30,16 +31,29 @@ llm0 = openai.build_llm(
 
 
 MAX_RETRIES = 3
-TABLE_GROUPS = {
-    "Music":    ["Album", "Artist", "Genre", "MediaType", "Playlist", "PlaylistTrack", "Track"],
-    "Business":   ["Customer", "Employee", "Invoice", "InvoiceLine"],
-}
+
+TABLE_GROUPS: Dict[str, List[str]] = {}
+try:
+    config_path = os.getenv('TABLE_GROUPS_CONFIG_PATH',
+                            'config/table_groups.json')
+    with open(config_path, 'r') as f:
+        TABLE_GROUPS = json.load(f)
+except Exception as e:
+    print(f"Error loading table groups: {e}")
+TABLE_GROUPS_KEY = list(TABLE_GROUPS.keys())
+
+
+def groups_to_tables(categories: List[table_categorize.Table]) -> List[str]:
+    out = []
+    for c in categories:
+        out.extend(TABLE_GROUPS.get(c.name, []))
+    return sorted(set(out))
 
 
 class State(BaseModel):
     current_input: str = Field(description="The current user's input.")
     group: Optional[str] = Field(
-        default=None, description="e.g., Business, Music")
+        default=None, description=f"e.g., {TABLE_GROUPS_KEY}")
     metric: Optional[Literal["count", "sum", "avg", "min", "max"]] = None
     time_range: Optional[str] = None
     summary: Optional[str] = Field(
@@ -96,7 +110,7 @@ def build_chat(llm: BaseChatModel, db: SQLDatabase):
         chain = clarify.build_clarify_chain(llm)
         result: clarify.Clarification = cast(clarify.Clarification,
                                              chain.invoke({"conversation_text": transcript,
-                                                           "table_digest": "\n".join(TABLE_GROUPS.keys())}))
+                                                           "table_digest": "\n".join(TABLE_GROUPS_KEY)}))
         return {
             "final_answer": result.follow_up_question,
             "messages": [AIMessage(result.follow_up_question)],
@@ -107,9 +121,9 @@ def build_chat(llm: BaseChatModel, db: SQLDatabase):
         """Node for selecting relevant tables based on user question."""
         category_chain = table_categorize.build_table_categorize_chain(llm)
         table: List[table_categorize.Table] = category_chain.invoke({"question": state.current_input,
-                                                                     "table_groups": "\n".join(TABLE_GROUPS.keys())})
+                                                                     "table_groups": "\n".join(TABLE_GROUPS_KEY)})
 
-        relevant_tables = table_categorize.groups_to_tables(table)
+        relevant_tables = groups_to_tables(table)
         return {"relevant_tables": relevant_tables,
                 "messages": [AIMessage(f"Relevant tables: {', '.join(relevant_tables) or '∅'}")]}
 
