@@ -1,9 +1,12 @@
+import os
 from chat import large_db
 from chat.db import sql
 from chat.llm import openai
 import uuid
 
-db = sql.build_sql_database("sqlite:///Chinook.db")
+db_url = os.getenv("DATABASE_URL", "sqlite:///Chinook.db")
+
+db = sql.build_sql_database(db_url)
 llm = openai.build_llm()
 chat = large_db.build_chat(llm, db)
 
